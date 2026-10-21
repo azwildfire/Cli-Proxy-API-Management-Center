@@ -20,13 +20,44 @@ import type {
 import { normalizeNumberValue, normalizeQuotaFraction, normalizeStringValue } from './parsers';
 import { parseOffsetSecondsToMs, resolveResetMs } from './resetInstants';
 
-const ANTIGRAVITY_BUCKET_WINDOW_ORDER = new Map<string, number>([
-  ['5h', 0],
-  ['five-hour', 0],
-  ['five_hour', 0],
-  ['weekly', 1],
-  ['week', 1],
+const HOURS_PER_DAY = 24;
+const HOURS_PER_WEEK = 24 * 7;
+/** Calendar months vary; plugins that know the exact length send it as `Nd` instead. */
+const HOURS_PER_MONTH = 24 * 30;
+const HOURS_PER_YEAR = 24 * 365;
+
+const WINDOW_NAME_HOURS = new Map<string, number>([
+  ['5h', 5],
+  ['five-hour', 5],
+  ['five_hour', 5],
+  ['hourly', 1],
+  ['hour', 1],
+  ['daily', HOURS_PER_DAY],
+  ['day', HOURS_PER_DAY],
+  ['weekly', HOURS_PER_WEEK],
+  ['week', HOURS_PER_WEEK],
+  ['monthly', HOURS_PER_MONTH],
+  ['month', HOURS_PER_MONTH],
+  ['yearly', HOURS_PER_YEAR],
+  ['year', HOURS_PER_YEAR],
 ]);
+
+const WINDOW_UNIT_HOURS: Record<string, number> = {
+  h: 1,
+  hr: 1,
+  hrs: 1,
+  hour: 1,
+  hours: 1,
+  d: HOURS_PER_DAY,
+  day: HOURS_PER_DAY,
+  days: HOURS_PER_DAY,
+  w: HOURS_PER_WEEK,
+  wk: HOURS_PER_WEEK,
+  week: HOURS_PER_WEEK,
+  weeks: HOURS_PER_WEEK,
+};
+
+const WINDOW_DURATION_PATTERN = /^(\d+(?:\.\d+)?)\s*([a-z]+)$/;
 
 function toStableId(value: string, fallback: string): string {
   const normalized = value
@@ -37,31 +68,32 @@ function toStableId(value: string, fallback: string): string {
   return normalized || fallback;
 }
 
+/** Shorter windows sort first; buckets with an unknown period keep their payload order at the end. */
 function getAntigravityWindowOrder(bucket: AntigravityQuotaBucket): number {
-  const window = bucket.window?.toLowerCase();
-  if (!window) return Number.MAX_SAFE_INTEGER;
-  return ANTIGRAVITY_BUCKET_WINDOW_ORDER.get(window) ?? Number.MAX_SAFE_INTEGER;
+  return antigravityPeriodHours(bucket.window) ?? Number.MAX_SAFE_INTEGER;
 }
 
 /**
- * Window length in hours for an Antigravity bucket.
+ * Window length in hours for an Antigravity or plugin bucket.
  *
- * Antigravity states the period explicitly in `window`, so unlike Kimi this is
- * a lookup rather than a keyword guess. The accepted spellings mirror
- * ANTIGRAVITY_BUCKET_WINDOW_ORDER above.
+ * The bucket states its period in `window`, so unlike Kimi this is a parse
+ * rather than a keyword guess. Antigravity's spellings (`5h`, `weekly`) are kept,
+ * and plugins may state any length: a named period (`daily`, `monthly`) or an
+ * exact duration such as `30d`, `31d` or `720h`, which lets a billing period or a
+ * calendar month be drawn on the quota timeline. Unknown text yields null, so the
+ * bucket still renders a meter but no projected window.
  */
-function antigravityPeriodHours(window: string | undefined): number | null {
-  switch ((window ?? '').trim().toLowerCase()) {
-    case '5h':
-    case 'five-hour':
-    case 'five_hour':
-      return 5;
-    case 'weekly':
-    case 'week':
-      return 24 * 7;
-    default:
-      return null;
-  }
+export function antigravityPeriodHours(window: string | undefined): number | null {
+  const normalized = (window ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  const named = WINDOW_NAME_HOURS.get(normalized);
+  if (named !== undefined) return named;
+  const match = WINDOW_DURATION_PATTERN.exec(normalized);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unitHours = WINDOW_UNIT_HOURS[match[2]];
+  if (!Number.isFinite(amount) || amount <= 0 || unitHours === undefined) return null;
+  return amount * unitHours;
 }
 
 export function buildAntigravityQuotaGroups(

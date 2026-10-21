@@ -223,6 +223,11 @@ export function projectResetCredits(
  * `maxPeriodHours` bounds what counts as fitting — the caller passes the span.
  * With nothing under the bound, the shortest available window is used rather
  * than drawing nothing.
+ *
+ * A window whose length is unknown can anchor a lane but never be drawn, so it
+ * only stands in when no window states its period at all; otherwise a sized
+ * window that is longer than the span still beats it, because a clipped bar
+ * says more than an empty row.
  */
 export function pickLaneWindow<
   T extends { resetAtMs?: number | null; periodHours?: number | null },
@@ -235,13 +240,16 @@ export function pickLaneWindow<
   const periodOf = (window: T) =>
     typeof window.periodHours === 'number' && window.periodHours > 0 ? window.periodHours : 0;
 
+  const sized = usable.filter((window) => periodOf(window) > 0);
+  const candidates = sized.length > 0 ? sized : usable;
+
   const fitting =
     maxPeriodHours === undefined
-      ? usable
-      : usable.filter((window) => periodOf(window) <= maxPeriodHours);
+      ? candidates
+      : candidates.filter((window) => periodOf(window) <= maxPeriodHours);
 
   // Longest period that still fits; soonest reset breaks a tie.
-  const pool = fitting.length > 0 ? fitting : usable;
+  const pool = fitting.length > 0 ? fitting : candidates;
   return pool.reduce((best, window) => {
     const byPeriod = periodOf(window) - periodOf(best);
     if (byPeriod !== 0) return byPeriod > 0 ? window : best;
